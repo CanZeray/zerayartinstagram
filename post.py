@@ -6,11 +6,35 @@ import requests
 import anthropic
 from pathlib import Path
 
-# GitHub Actions ortam değişkenlerinden alınan bilgiler
+# GitHub Secrets'tan alınan bilgiler
 IG_USER_ID = os.environ["IG_USER_ID"]
-PAGE_ACCESS_TOKEN = os.environ["PAGE_ACCESS_TOKEN"]
+LONG_LIVED_USER_TOKEN = os.environ["LONG_LIVED_USER_TOKEN"]
+PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN", "")  # yedek olarak
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+PAGE_ID = os.environ.get("PAGE_ID", "1097256760138045")
 GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "CanZeray/zerayartinstagram")
+
+
+def get_fresh_page_token():
+    """Uzun ömürlü kullanıcı tokenından taze sayfa tokenı al"""
+    response = requests.get(
+        "https://graph.facebook.com/v20.0/me/accounts",
+        params={"access_token": LONG_LIVED_USER_TOKEN}
+    )
+    data = response.json()
+
+    if "error" in data:
+        print(f"Kullanıcı token hatası: {data['error']}")
+        print("Yedek PAGE_ACCESS_TOKEN kullanılıyor...")
+        return PAGE_ACCESS_TOKEN
+
+    for page in data.get("data", []):
+        if page["id"] == PAGE_ID:
+            print(f"Taze sayfa tokenı alındı ✓")
+            return page["access_token"]
+
+    print("ZerayArt sayfası bulunamadı, yedek token kullanılıyor...")
+    return PAGE_ACCESS_TOKEN
 
 
 def get_next_image():
@@ -81,18 +105,17 @@ def get_image_url(image_path):
     return f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/images/{filename}"
 
 
-def post_to_instagram(image_url, caption):
+def post_to_instagram(image_url, caption, page_token):
     """Instagram Graph API üzerinden görseli paylaş"""
     base_url = "https://graph.facebook.com/v20.0"
 
-    # Adım 1: Medya konteyneri oluştur
     print("Medya konteyneri oluşturuluyor...")
     response = requests.post(
         f"{base_url}/{IG_USER_ID}/media",
         data={
             "image_url": image_url,
             "caption": caption,
-            "access_token": PAGE_ACCESS_TOKEN,
+            "access_token": page_token,
         },
     )
     result = response.json()
@@ -104,7 +127,6 @@ def post_to_instagram(image_url, caption):
     creation_id = result["id"]
     print(f"Konteyner oluşturuldu: {creation_id}")
 
-    # Adım 2: Yayınla
     print("Paylaşım yapılıyor...")
     time.sleep(5)
 
@@ -112,7 +134,7 @@ def post_to_instagram(image_url, caption):
         f"{base_url}/{IG_USER_ID}/media_publish",
         data={
             "creation_id": creation_id,
-            "access_token": PAGE_ACCESS_TOKEN,
+            "access_token": page_token,
         },
     )
     result = response.json()
@@ -137,6 +159,9 @@ def move_to_posted(image_path):
 def main():
     print("=== ZerayArt Instagram Otomasyon Başladı ===")
 
+    # Her çalıştırmada taze token al
+    page_token = get_fresh_page_token()
+
     image_path = get_next_image()
     print(f"Seçilen görsel: {image_path.name}")
 
@@ -147,7 +172,7 @@ def main():
     image_url = get_image_url(image_path)
     print(f"Görsel URL: {image_url}")
 
-    post_to_instagram(image_url, caption)
+    post_to_instagram(image_url, caption, page_token)
     move_to_posted(image_path)
 
     print("=== Tamamlandı ===")
