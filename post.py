@@ -2,9 +2,11 @@ import os
 import sys
 import time
 import base64
+import io
 import requests
 import anthropic
 from pathlib import Path
+from PIL import Image
 
 # GitHub Secrets'tan alınan bilgiler
 IG_USER_ID = os.environ["IG_USER_ID"]
@@ -56,15 +58,52 @@ def get_next_image():
     return image_files[0]
 
 
+def compress_image_for_api(image_path, max_bytes=4.5 * 1024 * 1024):
+    """Görseli Anthropic API limitinin altına sıkıştır (max 4.5 MB)"""
+    with Image.open(image_path) as img:
+        # RGBA veya P modunu RGB'ye çevir
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+
+        # Önce kaliteyi düşürerek dene
+        quality = 90
+        while quality >= 10:
+            buffer = io.BytesIO()
+            img.save(buffer, format="JPEG", quality=quality)
+            size = buffer.tell()
+            print(f"  Sıkıştırma deneniyor (quality={quality}): {size / 1024 / 1024:.2f} MB")
+            if size <= max_bytes:
+                buffer.seek(0)
+                return buffer.read(), "image/jpeg"
+            quality -= 10
+
+        # Hala büyükse boyutu yarıya indir
+        print("  Boyut küçültülüyor (yarıya)...")
+        img = img.resize((img.width // 2, img.height // 2), Image.LANCZOS)
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=85)
+        buffer.seek(0)
+        return buffer.read(), "image/jpeg"
+
+
 def generate_caption(image_path):
     """Claude ile Türkçe + İngilizce kısa açıklama üret"""
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    with open(image_path, "rb") as f:
-        image_data = base64.standard_b64encode(f.read()).decode("utf-8")
+    print(f"  Görsel boyutu kontrol ediliyor...")
+    file_size = image_path.stat().st_size
+    print(f"  Orijinal boyut: {file_size / 1024 / 1024:.2f} MB")
 
-    suffix = image_path.suffix.lower()
-    media_type = "image/jpeg" if suffix in [".jpg", ".jpeg"] else "image/png"
+    if file_size > 4.5 * 1024 * 1024:
+        print(f"  Görsel 4.5 MB üzerinde, sıkıştırılıyor...")
+        image_data_bytes, media_type = compress_image_for_api(image_path)
+        image_data = base64.standard_b64encode(image_data_bytes).decode("utf-8")
+        print(f"  Sıkıştırma tamamlandı ✓")
+    else:
+        with open(image_path, "rb") as f:
+            image_data = base64.standard_b64encode(f.read()).decode("utf-8")
+        suffix = image_path.suffix.lower()
+        media_type = "image/jpeg" if suffix in [".jpg", ".jpeg"] else "image/png"
 
     message = client.messages.create(
         model="claude-haiku-4-5-20251001",
